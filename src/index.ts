@@ -388,6 +388,8 @@ const plugin = {
           name: validateAgentName(a.name, 'agent.name'),
           emoji: validateStringField(a.emoji, 'agent.emoji', 10),
           persona: validateStringField(a.persona, 'agent.persona'),
+          ...(a.model !== undefined ? { model: validateStringField(a.model, 'agent.model', 100) } : {}),
+          ...(a.permissionMode !== undefined ? { permissionMode: validatePermissionMode(a.permissionMode, 'agent.permissionMode') as PermissionMode } : {}),
         }));
 
         const ensemble = getManager().ensembleStart(task, {

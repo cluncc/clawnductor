@@ -54,6 +54,7 @@ export function validateAgentName(value: unknown, field = 'agent name'): string 
 
 export function validateCwd(value: unknown, field = 'cwd'): string {
   if (typeof value !== 'string') throw new Error(`${field} must be a string`);
+  if (!value.trim()) throw new Error(`${field} cannot be empty`);
   if (value.length > MAX_CWD_LENGTH) throw new Error(`${field} exceeds maximum path length`);
   const resolved = path.resolve(value);
   for (const forbidden of FORBIDDEN_PATH_PREFIXES) {

@@ -150,8 +150,6 @@ export class Ensemble extends EventEmitter {
           injected,
         );
 
-        for (const r of responses) this.session.responses.push(r);
-
         // Check consensus
         const votes = responses.map((r) => r.consensus);
         const allYes = votes.length === config.agents.length && votes.every(Boolean);
@@ -204,27 +202,29 @@ export class Ensemble extends EventEmitter {
     const agentTimeoutMs = config.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
     const maxTurns = config.maxTurnsPerAgent ?? DEFAULT_MAX_TURNS_PER_AGENT;
 
-    const results = await Promise.allSettled(
-      config.agents.map((agent) =>
-        this._runAgent(agent, round, task, config, projectDir, planContent, gitLog, injected, agentTimeoutMs, maxTurns),
-      ),
+    const responses = await Promise.all(
+      config.agents.map(async (agent) => {
+        let response: AgentResponse;
+        try {
+          response = await this._runAgent(agent, round, task, config, projectDir, planContent, gitLog, injected, agentTimeoutMs, maxTurns);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.log(`[ensemble:${this.id}] agent ${agent.name} round ${round} failed — ${errMsg}`);
+          response = {
+            agent: agent.name,
+            round,
+            content: `[ERROR] ${errMsg}`,
+            consensus: false,
+            timestamp: new Date().toISOString(),
+          };
+        }
+        this.session.responses.push(response);
+        this._flushLog();
+        return response;
+      }),
     );
 
-    return results.map((r, i) => {
-      const agent = config.agents[i];
-      if (r.status === 'fulfilled') {
-        return r.value;
-      }
-      const errMsg = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      this.log(`[ensemble:${this.id}] agent ${agent.name} round ${round} failed — ${errMsg}`);
-      return {
-        agent: agent.name,
-        round,
-        content: `[ERROR] ${errMsg}`,
-        consensus: false,
-        timestamp: new Date().toISOString(),
-      };
-    });
+    return responses;
   }
 
   private async _runAgent(
@@ -264,6 +264,7 @@ export class Ensemble extends EventEmitter {
     // Get or create the agent's session
     let session = this._agentSessions.get(agent.name);
     if (!session || !session.isReady) {
+      if (session) session.stop(); // clean up crashed/stale session before replacing
       this.log(`[ensemble:${this.id}] starting agent session ${agent.name} round ${round}`);
       session = new PersistentClaudeSession(
         {
@@ -296,15 +297,18 @@ export class Ensemble extends EventEmitter {
   // ─── Worktree management ───────────────────────────────────────────────────
 
   private async _setupWorktrees(projectDir: string, agents: AgentPersona[]): Promise<void> {
+    // Fetch worktree list once; parsing it per-agent would be O(n²) git invocations
+    const { stdout: worktreeOut } = await git(['worktree', 'list', '--porcelain'], projectDir);
+    const existingWorktrees = new Set(
+      worktreeOut.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length)),
+    );
+
     for (const agent of agents) {
       const safeName = validateAgentName(agent.name);
       const branchName = `ensemble/${safeName}`;
       const worktreePath = path.join(projectDir, WORKTREE_DIR, safeName);
 
-      // Check if worktree already exists (exact-line match avoids substring false positives)
-      const { stdout } = await git(['worktree', 'list', '--porcelain'], projectDir);
-      const alreadyExists = stdout.split('\n').some((l) => l === `worktree ${worktreePath}`);
-      if (alreadyExists) continue;
+      if (existingWorktrees.has(worktreePath)) continue;
 
       // Create branch if it doesn't exist
       try {
@@ -489,7 +493,7 @@ export class Ensemble extends EventEmitter {
 
 // ─── Round prompt builder ─────────────────────────────────────────────────────
 
-function buildRoundPrompt(
+export function buildRoundPrompt(
   round: number,
   task: string,
   plan: string | null,

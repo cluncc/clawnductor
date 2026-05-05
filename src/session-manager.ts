@@ -144,11 +144,23 @@ export class SessionManager {
       throw new Error(`Session circuit breaker open — too many consecutive failures. ${cbStatus}`);
     }
 
+    const name = input.name ?? `session-${Date.now()}`;
+
+    // Stop any existing session with the same name before counting toward the limit
+    const existingRec = this.sessions.get(name);
+    if (existingRec) {
+      if (existingRec.session.isBusy) {
+        throw new Error(`Session "${name}" is currently busy — stop it first or use a different name`);
+      }
+      existingRec.session.stop();
+      this.sessions.delete(name);
+      this.pids.delete(name);
+      this.log(`[session:${name}] stopped (replaced by new session with same name)`);
+    }
+
     if (this.sessions.size >= this.config.maxConcurrentSessions) {
       throw new Error(`Max concurrent sessions (${this.config.maxConcurrentSessions}) reached`);
     }
-
-    const name = input.name ?? `session-${Date.now()}`;
 
     // Auto-resume if persisted session exists with this name
     const existing = this.persisted.find((p) => p.name === name);
@@ -421,20 +433,7 @@ export class SessionManager {
   }
 
   ensembleStatus(id: string): EnsembleSession | undefined {
-    const live = this.ensembles.get(id)?.session;
-    if (live) return live;
-
-    const saved = this.savedEnsembles[id];
-    if (!saved) return undefined;
-
-    // 'running' on disk with nothing in memory: the manager was reset while it was
-    // running. The ensemble may still be completing in the background — final state
-    // will appear here once it saves. Keep status as 'running' so pollers don't stop.
-    if (saved.status === 'running') {
-      return { ...saved, error: 'Detached from manager — may still be running in background' };
-    }
-
-    return saved;
+    return this.ensembles.get(id)?.session ?? this.savedEnsembles[id];
   }
 
   ensembleAbort(id: string): void {
@@ -734,9 +733,11 @@ export class SessionManager {
       const cutoff = Date.now() - 7 * 86_400_000; // prune entries older than 7 days
       for (const [id, session] of Object.entries(data)) {
         if (session.startTime && new Date(session.startTime).getTime() < cutoff) continue;
-        // Load raw state; ensembleStatus() resolves abandoned vs live at query time
         if (session.status === 'running') {
-          this.log(`[ensemble:${id}] loaded from disk with status running — will appear as abandoned until confirmed live`);
+          session.status = 'abandoned';
+          session.error = 'Manager restarted while ensemble was running';
+          session.endTime = new Date().toISOString();
+          this.log(`[ensemble:${id}] marked abandoned — was running when manager last stopped`);
         }
         this.savedEnsembles[id] = session;
       }
@@ -761,7 +762,12 @@ export class SessionManager {
           const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
           if (!cmdline.includes('claude')) continue;
           process.kill(pid, 'SIGTERM');
-          setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 3000);
+          setTimeout(() => {
+            try {
+              const cmdline2 = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+              if (cmdline2.includes('claude')) process.kill(pid, 'SIGKILL');
+            } catch {}
+          }, 3000);
         } catch {
           // Not running or no /proc entry — ignore
         }

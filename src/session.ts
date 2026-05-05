@@ -167,8 +167,9 @@ export class PersistentClaudeSession extends EventEmitter {
     }
 
     const now = new Date().toISOString();
-    if (this._stats.history.length < MAX_HISTORY_EVENTS) {
-      this._stats.history.push({ time: now, type: event.type, event });
+    this._stats.history.push({ time: now, type: event.type, event });
+    if (this._stats.history.length > MAX_HISTORY_EVENTS) {
+      this._stats.history.shift();
     }
     this.emit('event', event);
 

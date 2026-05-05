@@ -92,8 +92,24 @@ describe('validateCwd', () => {
     assert.throws(() => validateCwd(123), /must be a string/);
   });
 
+  it('rejects empty string', () => {
+    assert.throws(() => validateCwd(''), /cannot be empty/);
+    assert.throws(() => validateCwd('   '), /cannot be empty/);
+  });
+
   it('rejects paths exceeding max length', () => {
     assert.throws(() => validateCwd('/tmp/' + 'a'.repeat(500)), /maximum path length/);
+  });
+
+  it('rejects exact forbidden prefix without subdirectory', () => {
+    assert.throws(() => validateCwd('/proc'), /forbidden/);
+    assert.throws(() => validateCwd('/sys'), /forbidden/);
+    assert.throws(() => validateCwd('/dev'), /forbidden/);
+  });
+
+  it('accepts paths that merely contain forbidden words in a non-prefix position', () => {
+    assert.doesNotThrow(() => validateCwd('/tmp/proc-data'));
+    assert.doesNotThrow(() => validateCwd('/home/user/sysconfig'));
   });
 });
 
