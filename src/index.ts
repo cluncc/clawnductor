@@ -61,7 +61,7 @@ const plugin = {
       parameters: unknown;
       execute: (id: unknown, args: Record<string, unknown>) => Promise<unknown>;
     }): void {
-      registerTool({
+      api.registerTool({
         ...t,
         execute: async (id, args) => {
           api.logger.info(`[tool:${t.name}] invoked`);

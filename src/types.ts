@@ -122,8 +122,7 @@ export type EnsembleStatus =
   | 'max_rounds'
   | 'error'
   | 'accepted'
-  | 'rejected'
-  | 'abandoned';
+  | 'rejected';
 
 export interface EnsembleSession {
   id: string;

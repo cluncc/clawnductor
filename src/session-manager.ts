@@ -427,14 +427,11 @@ export class SessionManager {
     const saved = this.savedEnsembles[id];
     if (!saved) return undefined;
 
-    // 'running' on disk with nothing in memory means the manager was reset mid-run
+    // 'running' on disk with nothing in memory: the manager was reset while it was
+    // running. The ensemble may still be completing in the background — final state
+    // will appear here once it saves. Keep status as 'running' so pollers don't stop.
     if (saved.status === 'running') {
-      return {
-        ...saved,
-        status: 'abandoned',
-        error: 'Ensemble was running when the manager last restarted',
-        endTime: saved.endTime ?? new Date().toISOString(),
-      };
+      return { ...saved, error: 'Detached from manager — may still be running in background' };
     }
 
     return saved;
@@ -676,8 +673,10 @@ export class SessionManager {
       this.sessions.delete(name);
       this.log(`[session:${name}] stopped on shutdown`);
     }
+    // Ensembles are intentionally NOT aborted — they run to completion as detached
+    // background work. The finally block in ensembleStart() saves final state to disk.
     for (const ensemble of this.ensembles.values()) {
-      ensemble.abort();
+      this.log(`[ensemble:${ensemble.id}] detached on shutdown — will run to completion`);
       this._saveEnsembleState(ensemble.session);
     }
     this.pids.clear();
