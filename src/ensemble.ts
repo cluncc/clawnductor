@@ -113,6 +113,7 @@ export class Ensemble extends EventEmitter {
     const maxRounds = config.maxRounds ?? DEFAULT_MAX_ROUNDS;
 
     this.log(`[ensemble:${this.id}] starting — task: ${task.slice(0, 80)}`);
+    this._flushLog();
 
     // Ensure project dir is a git repo
     try {
@@ -157,6 +158,7 @@ export class Ensemble extends EventEmitter {
 
         const voteStr = responses.map((r) => `${r.agent}:${r.consensus ? 'YES' : 'NO'}`).join(' ');
         this.log(`[ensemble:${this.id}] round ${round} votes — ${voteStr}`);
+        this._flushLog();
 
         if (allYes) {
           this.session.status = 'consensus';
@@ -184,7 +186,7 @@ export class Ensemble extends EventEmitter {
     } finally {
       for (const s of this._agentSessions.values()) s.stop();
       this._agentSessions.clear();
-      this._writeTranscript();
+      this._flushLog();
     }
   }
 
@@ -470,21 +472,18 @@ export class Ensemble extends EventEmitter {
     }
   }
 
-  private _writeTranscript(): void {
+  private _logPath(): string {
+    const logDir = path.join(process.env.HOME ?? '/tmp', '.openclaw', 'ensemble-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    return path.join(logDir, `ensemble-${this.id}.json`);
+  }
+
+  private _flushLog(): void {
     try {
-      const logDir = path.join(
-        process.env.HOME ?? '/tmp',
-        '.openclaw',
-        'ensemble-logs',
-      );
-      fs.mkdirSync(logDir, { recursive: true });
-      const filename = `ensemble-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-      fs.writeFileSync(
-        path.join(logDir, filename),
-        JSON.stringify(this.session, null, 2),
-        'utf8',
-      );
-    } catch {}
+      fs.writeFileSync(this._logPath(), JSON.stringify(this.session, null, 2), 'utf8');
+    } catch (err) {
+      this.log(`[ensemble:${this.id}] log write failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 
