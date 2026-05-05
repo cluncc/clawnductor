@@ -1,0 +1,68 @@
+{
+  "id": "clawnductor",
+  "name": "Clawnductor",
+  "description": "Weaponize Claude Code from OpenClaw. Persistent headless coding sessions (jams), multi-agent ensembles, deep planning overtures, and fleet review finales — all wired as first-class OpenClaw tools.",
+  "enabledByDefault": false,
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "claudeBin": {
+        "type": "string",
+        "default": "claude",
+        "description": "Path to the Claude Code CLI binary"
+      },
+      "defaultModel": {
+        "type": "string",
+        "description": "Default model for new sessions (opus, sonnet, haiku, or full model ID)"
+      },
+      "defaultPermissionMode": {
+        "type": "string",
+        "enum": ["bypassPermissions", "acceptEdits", "auto", "plan"],
+        "default": "bypassPermissions",
+        "description": "Default permission mode for Claude sessions"
+      },
+      "maxConcurrentSessions": {
+        "type": "number",
+        "default": 5,
+        "description": "Maximum concurrent Claude Code sessions"
+      },
+      "sessionTtlMinutes": {
+        "type": "number",
+        "default": 120,
+        "description": "Auto-cleanup idle sessions after N minutes"
+      }
+    }
+  },
+  "capabilities": {
+    "childProcess": true,
+    "networkAccess": ["127.0.0.1"]
+  },
+  "contracts": {
+    "tools": [
+      "jam_start",
+      "jam_play",
+      "jam_end",
+      "jam_list",
+      "jam_status",
+      "jam_groove",
+      "jam_bridge",
+      "jam_transpose",
+      "jam_rekey",
+      "jam_roster",
+      "bandstand",
+      "ensemble_start",
+      "ensemble_status",
+      "ensemble_abort",
+      "ensemble_cue",
+      "ensemble_score",
+      "ensemble_accept",
+      "ensemble_reject",
+      "overture_start",
+      "overture_status",
+      "finale_start",
+      "finale_status",
+      "purge_stage"
+    ]
+  },
+  "skills": ["skills/SKILL.md"]
+}
