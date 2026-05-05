@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseConsensus } from '../src/council.js';
+import { parseConsensus } from '../src/ensemble.js';
 
 describe('parseConsensus', () => {
   it('returns true for [CONSENSUS: YES]', () => {

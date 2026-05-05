@@ -10,7 +10,7 @@
  * Tool naming theme: music puns
  *   jam_*       single-session operations (a "jam session")
  *   bandstand   all-sessions health overview
- *   ensemble_*  multi-agent council (the ensemble)
+ *   ensemble_*  multi-agent ensemble
  *   overture_*  deep planning (ultraplan) — introduces the work
  *   finale_*    fleet code review — the closing movement
  *   purge_stage wipe project state
@@ -48,9 +48,35 @@ const plugin = {
     function getManager(): SessionManager {
       if (!manager) {
         api.logger.info('[clawnductor] Initialising SessionManager on first use');
-        manager = new SessionManager(rawConfig);
+        manager = new SessionManager(rawConfig, (msg) => api.logger.info(msg));
       }
       return manager;
+    }
+
+    // ─── Logging wrapper ──────────────────────────────────────────────────────
+
+    function registerTool(t: {
+      name: string;
+      description: string;
+      parameters: unknown;
+      execute: (id: unknown, args: Record<string, unknown>) => Promise<unknown>;
+    }): void {
+      registerTool({
+        ...t,
+        execute: async (id, args) => {
+          api.logger.info(`[tool:${t.name}] invoked`);
+          try {
+            const result = await t.execute(id, args);
+            if (result && typeof result === 'object' && 'ok' in result && !(result as { ok: boolean }).ok) {
+              api.logger.error(`[tool:${t.name}] returned ok:false —`, (result as { error?: unknown }).error ?? result);
+            }
+            return result;
+          } catch (err) {
+            api.logger.error(`[tool:${t.name}] threw — ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+          }
+        },
+      });
     }
 
     // ─── Service lifecycle ────────────────────────────────────────────────────
@@ -70,7 +96,7 @@ const plugin = {
     // JAM — Single-session tools
     // ═══════════════════════════════════════════════════════════════════════════
 
-    api.registerTool({
+    registerTool({
       name: 'jam_start',
       description:
         'Start a persistent Claude Code session (a "jam"). Returns a session name you pass to jam_play, jam_bridge, etc. Sessions stay alive across requests — use jam_list to see active ones.',
@@ -121,7 +147,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_play',
       description: 'Send a prompt to an active jam session and get the response.',
       parameters: {
@@ -154,7 +180,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_end',
       description: 'Stop an active jam session and free its subprocess.',
       parameters: {
@@ -168,7 +194,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_list',
       description: 'List all active and persisted jam sessions.',
       parameters: { type: 'object', properties: {} },
@@ -178,7 +204,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_status',
       description: 'Detailed status for a single jam session: context %, tokens, cost, uptime, retries.',
       parameters: {
@@ -192,7 +218,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'bandstand',
       description:
         'Health overview of every active jam session: readiness, busy/paused state, cost, context %. Use this for a dashboard view; use jam_status for single-session detail.',
@@ -203,7 +229,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_groove',
       description: "Search a session's event history with a regex pattern.",
       parameters: {
@@ -225,7 +251,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_bridge',
       description:
         'Compact a session\'s context to reclaim context window space. Like a musical bridge — connects what came before to what comes next.',
@@ -245,7 +271,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_transpose',
       description:
         'Switch the model for a running session. Restarts subprocess with --resume to preserve history. Like transposing a song to a new key.',
@@ -266,7 +292,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_rekey',
       description:
         'Update allowed/disallowed tools for a running session. Restarts with --resume. Like changing the key signature mid-score.',
@@ -292,7 +318,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'jam_roster',
       description: 'List agent definitions from .claude/agents/ in a project directory.',
       parameters: {
@@ -307,13 +333,13 @@ const plugin = {
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ENSEMBLE — Multi-agent council tools
+    // ENSEMBLE — Multi-agent ensemble tools
     // ═══════════════════════════════════════════════════════════════════════════
 
-    api.registerTool({
+    registerTool({
       name: 'ensemble_start',
       description:
-        'Start a multi-agent ensemble (council) on a coding task. Agents work in parallel git worktrees, vote on completion, and merge to main. Returns an ensemble ID — poll with ensemble_status.',
+        'Start a multi-agent ensemble on a coding task. Agents work in parallel git worktrees, vote on completion, and merge to main. Returns an ensemble ID — poll with ensemble_status.',
       parameters: {
         type: 'object',
         properties: {
@@ -364,7 +390,7 @@ const plugin = {
           persona: validateStringField(a.persona, 'agent.persona'),
         }));
 
-        const council = getManager().councilStart(task, {
+        const ensemble = getManager().ensembleStart(task, {
           agents,
           maxRounds: args.maxRounds !== undefined ? validatePositiveInt(args.maxRounds, 'maxRounds', 50) : 15,
           projectDir,
@@ -376,11 +402,11 @@ const plugin = {
             : 'bypassPermissions',
         });
 
-        return { ok: true, id: council.id, status: council.status, task: council.task };
+        return { ok: true, id: ensemble.id, status: ensemble.status, task: ensemble.task };
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'ensemble_status',
       description: 'Get current status of an ensemble: round, responses, consensus votes.',
       parameters: {
@@ -389,13 +415,13 @@ const plugin = {
         required: ['id'],
       },
       execute: async (_id, args) => {
-        const council = getManager().councilStatus(validateStringField(args.id, 'id', 36));
-        if (!council) return { ok: false, error: 'Ensemble not found' };
-        return { ok: true, ...council };
+        const ensemble = getManager().ensembleStatus(validateStringField(args.id, 'id', 36));
+        if (!ensemble) return { ok: false, error: 'Ensemble not found' };
+        return { ok: true, ...ensemble };
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'ensemble_abort',
       description: 'Stop all agent sessions and terminate an ensemble.',
       parameters: {
@@ -404,12 +430,12 @@ const plugin = {
         required: ['id'],
       },
       execute: async (_id, args) => {
-        getManager().councilAbort(validateStringField(args.id, 'id', 36));
+        getManager().ensembleAbort(validateStringField(args.id, 'id', 36));
         return { ok: true };
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'ensemble_cue',
       description: "Inject a message into all agents' prompts for the next round. Like a conductor's cue.",
       parameters: {
@@ -421,7 +447,7 @@ const plugin = {
         required: ['id', 'message'],
       },
       execute: async (_id, args) => {
-        getManager().councilInject(
+        getManager().ensembleInject(
           validateStringField(args.id, 'id', 36),
           validateStringField(args.message, 'message'),
         );
@@ -429,7 +455,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'ensemble_score',
       description:
         'Review completed ensemble output: changed files, branches, worktrees, plan.md, and per-agent summaries. Call before ensemble_accept or ensemble_reject.',
@@ -439,26 +465,26 @@ const plugin = {
         required: ['id'],
       },
       execute: async (_id, args) => {
-        const result = await getManager().councilReview(validateStringField(args.id, 'id', 36));
+        const result = await getManager().ensembleReview(validateStringField(args.id, 'id', 36));
         return { ok: true, ...result };
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'ensemble_accept',
-      description: 'Accept ensemble work and clean up: removes worktrees, council/* branches, plan.md, reviews/.',
+      description: 'Accept ensemble work and clean up: removes worktrees, ensemble/* branches, plan.md, reviews/.',
       parameters: {
         type: 'object',
         properties: { id: { type: 'string' } },
         required: ['id'],
       },
       execute: async (_id, args) => {
-        const result = await getManager().councilAccept(validateStringField(args.id, 'id', 36));
+        const result = await getManager().ensembleAccept(validateStringField(args.id, 'id', 36));
         return { ok: true, ...result };
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'ensemble_reject',
       description: 'Reject ensemble work: rewrites plan.md with feedback. Worktrees preserved for retry.',
       parameters: {
@@ -470,7 +496,7 @@ const plugin = {
         required: ['id', 'feedback'],
       },
       execute: async (_id, args) => {
-        const result = await getManager().councilReject(
+        const result = await getManager().ensembleReject(
           validateStringField(args.id, 'id', 36),
           validateStringField(args.feedback, 'feedback'),
         );
@@ -482,7 +508,7 @@ const plugin = {
     // OVERTURE — Deep planning (ultraplan)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    api.registerTool({
+    registerTool({
       name: 'overture_start',
       description:
         'Start a deep planning session — an Opus agent that explores your codebase thoroughly and produces a detailed implementation plan. Runs up to 30 minutes in background. Poll with overture_status.',
@@ -506,7 +532,7 @@ const plugin = {
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'overture_status',
       description: 'Get the status and plan text from an overture session.',
       parameters: {
@@ -525,7 +551,7 @@ const plugin = {
     // FINALE — Fleet code review (ultrareview)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    api.registerTool({
+    registerTool({
       name: 'finale_start',
       description:
         'Launch a fleet of specialized code review agents in parallel — security, logic, performance, API, types, concurrency, and more. Runs in background. Poll with finale_status.',
@@ -547,11 +573,11 @@ const plugin = {
           model: args.model !== undefined ? validateStringField(args.model, 'model', 100) : undefined,
           focus: args.focus !== undefined ? validateStringField(args.focus, 'focus') : undefined,
         });
-        return { ok: true, id: result.id, councilId: result.councilId, status: result.status, agentCount: result.agentCount };
+        return { ok: true, id: result.id, ensembleId: result.ensembleId, status: result.status, agentCount: result.agentCount };
       },
     });
 
-    api.registerTool({
+    registerTool({
       name: 'finale_status',
       description: 'Get status and findings from a finale review fleet.',
       parameters: {
@@ -570,7 +596,7 @@ const plugin = {
     // STAGE — Project management
     // ═══════════════════════════════════════════════════════════════════════════
 
-    api.registerTool({
+    registerTool({
       name: 'purge_stage',
       description:
         'Wipe Claude Code project state (transcripts, tasks, file history) via `claude project purge`. Defaults to dry-run — pass dry_run: false to actually delete.',

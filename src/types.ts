@@ -88,7 +88,7 @@ export interface AgentInfo {
   description: string;
 }
 
-// ─── Council ──────────────────────────────────────────────────────────────────
+// ─── Ensemble ─────────────────────────────────────────────────────────────────
 
 export interface AgentPersona {
   name: string;
@@ -98,7 +98,7 @@ export interface AgentPersona {
   permissionMode?: PermissionMode;
 }
 
-export interface CouncilConfig {
+export interface EnsembleConfig {
   agents: AgentPersona[];
   maxRounds: number;
   projectDir: string;
@@ -116,54 +116,55 @@ export interface AgentResponse {
   timestamp: string;
 }
 
-export type CouncilStatus =
+export type EnsembleStatus =
   | 'running'
   | 'consensus'
   | 'max_rounds'
   | 'error'
   | 'accepted'
-  | 'rejected';
+  | 'rejected'
+  | 'abandoned';
 
-export interface CouncilSession {
+export interface EnsembleSession {
   id: string;
   task: string;
-  config: CouncilConfig;
+  config: EnsembleConfig;
   responses: AgentResponse[];
-  status: CouncilStatus;
+  status: EnsembleStatus;
   round: number;
   startTime: string;
   endTime?: string;
   error?: string;
 }
 
-export interface CouncilChangedFile {
+export interface EnsembleChangedFile {
   file: string;
   insertions: number;
   deletions: number;
 }
 
-export interface CouncilReviewResult {
-  councilId: string;
+export interface EnsembleReviewResult {
+  ensembleId: string;
   projectDir: string;
-  status: CouncilStatus;
+  status: EnsembleStatus;
   rounds: number;
   planExists: boolean;
   planContent?: string;
-  changedFiles: CouncilChangedFile[];
+  changedFiles: EnsembleChangedFile[];
   branches: string[];
   worktrees: string[];
   agentSummaries: Array<{ agent: string; consensus: boolean; preview: string }>;
 }
 
-export interface CouncilAcceptResult {
-  councilId: string;
+export interface EnsembleAcceptResult {
+  ensembleId: string;
   branchesDeleted: string[];
   worktreesRemoved: string[];
   planDeleted: boolean;
 }
 
-export interface CouncilRejectResult {
-  councilId: string;
+export interface EnsembleRejectResult {
+  ensembleId: string;
   planRewritten: boolean;
   feedback: string;
 }
@@ -183,7 +184,7 @@ export interface UltraplanResult {
 export interface UltrareviewResult {
   id: string;
   status: 'running' | 'completed' | 'error';
-  councilId: string;
+  ensembleId: string;
   findings?: string;
   agentCount: number;
   startTime: string;
@@ -221,7 +222,7 @@ export const DEFAULT_MAX_ROUNDS = 15;
 export const DEFAULT_AGENT_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_MAX_TURNS_PER_AGENT = 30;
 export const INTER_ROUND_DELAY_MS = 2_000;
-export const COUNCIL_RESULT_TTL_MS = 30 * 60_000;
+export const ENSEMBLE_RESULT_TTL_MS = 30 * 60_000;
 export const GIT_CMD_TIMEOUT_MS = 30_000;
 export const WORKTREE_DIR = '.worktrees';
 

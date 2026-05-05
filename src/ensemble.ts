@@ -1,5 +1,5 @@
 /**
- * Council — multi-agent ensemble with git worktree isolation
+ * Ensemble — multi-agent ensemble with git worktree isolation
  *
  * Round 1: all agents write plan.md in parallel (no code allowed)
  * Round 2+: agents claim tasks, implement, merge to main, cross-review
@@ -14,13 +14,13 @@ import { PersistentClaudeSession } from './session.js';
 import { validateAgentName } from './validation.js';
 import {
   type AgentPersona,
-  type CouncilConfig,
-  type CouncilSession,
+  type EnsembleConfig,
+  type EnsembleSession,
   type AgentResponse,
-  type CouncilReviewResult,
-  type CouncilAcceptResult,
-  type CouncilRejectResult,
-  type CouncilChangedFile,
+  type EnsembleReviewResult,
+  type EnsembleAcceptResult,
+  type EnsembleRejectResult,
+  type EnsembleChangedFile,
   INTER_ROUND_DELAY_MS,
   GIT_CMD_TIMEOUT_MS,
   WORKTREE_DIR,
@@ -75,19 +75,21 @@ function loadSystemPrompt(): string {
   }
 }
 
-// ─── Council ──────────────────────────────────────────────────────────────────
+// ─── Ensemble ─────────────────────────────────────────────────────────────────
 
-export class Council extends EventEmitter {
-  readonly session: CouncilSession;
+export class Ensemble extends EventEmitter {
+  readonly session: EnsembleSession;
   private _agentSessions: Map<string, PersistentClaudeSession> = new Map();
   private _aborted = false;
   private claudeBin: string;
   private _injected: string[] = [];
+  private log: (msg: string) => void;
 
-  constructor(session: CouncilSession, claudeBin: string) {
+  constructor(session: EnsembleSession, claudeBin: string, log?: (msg: string) => void) {
     super();
     this.session = session;
     this.claudeBin = claudeBin;
+    this.log = log ?? (() => {});
   }
 
   get id(): string { return this.session.id; }
@@ -96,6 +98,7 @@ export class Council extends EventEmitter {
     this._aborted = true;
     for (const s of this._agentSessions.values()) s.stop();
     this._agentSessions.clear();
+    this.log(`[ensemble:${this.id}] aborted`);
   }
 
   inject(message: string): void {
@@ -109,12 +112,14 @@ export class Council extends EventEmitter {
     const projectDir = path.resolve(config.projectDir);
     const maxRounds = config.maxRounds ?? DEFAULT_MAX_ROUNDS;
 
+    this.log(`[ensemble:${this.id}] starting — task: ${task.slice(0, 80)}`);
+
     // Ensure project dir is a git repo
     try {
       await git(['rev-parse', '--git-dir'], projectDir);
     } catch {
       await git(['init'], projectDir);
-      await git(['commit', '--allow-empty', '-m', 'init: council workspace'], projectDir);
+      await git(['commit', '--allow-empty', '-m', 'init: ensemble workspace'], projectDir);
     }
 
     // Set up worktrees and branches for each agent
@@ -127,6 +132,7 @@ export class Council extends EventEmitter {
         if (this._aborted) break;
 
         this.session.round = round;
+        this.log(`[ensemble:${this.id}] round ${round}/${maxRounds} starting`);
 
         const injected = this._injected.splice(0);
 
@@ -149,9 +155,13 @@ export class Council extends EventEmitter {
         const votes = responses.map((r) => r.consensus);
         const allYes = votes.length === config.agents.length && votes.every(Boolean);
 
+        const voteStr = responses.map((r) => `${r.agent}:${r.consensus ? 'YES' : 'NO'}`).join(' ');
+        this.log(`[ensemble:${this.id}] round ${round} votes — ${voteStr}`);
+
         if (allYes) {
           this.session.status = 'consensus';
           this.session.endTime = new Date().toISOString();
+          this.log(`[ensemble:${this.id}] consensus reached after ${round} round(s)`);
           break;
         }
 
@@ -163,11 +173,14 @@ export class Council extends EventEmitter {
       if (this.session.status === 'running') {
         this.session.status = 'max_rounds';
         this.session.endTime = new Date().toISOString();
+        this.log(`[ensemble:${this.id}] max rounds (${maxRounds}) reached without consensus`);
       }
     } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       this.session.status = 'error';
-      this.session.error = err instanceof Error ? err.message : String(err);
+      this.session.error = msg;
       this.session.endTime = new Date().toISOString();
+      this.log(`[ensemble:${this.id}] error — ${msg}`);
     } finally {
       for (const s of this._agentSessions.values()) s.stop();
       this._agentSessions.clear();
@@ -180,7 +193,7 @@ export class Council extends EventEmitter {
   private async _runRound(
     round: number,
     task: string,
-    config: CouncilConfig,
+    config: EnsembleConfig,
     projectDir: string,
     planContent: string | null,
     gitLog: string,
@@ -200,10 +213,12 @@ export class Council extends EventEmitter {
       if (r.status === 'fulfilled') {
         return r.value;
       }
+      const errMsg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      this.log(`[ensemble:${this.id}] agent ${agent.name} round ${round} failed — ${errMsg}`);
       return {
         agent: agent.name,
         round,
-        content: `[ERROR] ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`,
+        content: `[ERROR] ${errMsg}`,
         consensus: false,
         timestamp: new Date().toISOString(),
       };
@@ -214,7 +229,7 @@ export class Council extends EventEmitter {
     agent: AgentPersona,
     round: number,
     task: string,
-    config: CouncilConfig,
+    config: EnsembleConfig,
     projectDir: string,
     planContent: string | null,
     gitLog: string,
@@ -224,12 +239,12 @@ export class Council extends EventEmitter {
   ): Promise<AgentResponse> {
     const safeName = validateAgentName(agent.name);
     const worktreeDir = path.join(projectDir, WORKTREE_DIR, safeName);
-    const branchName = `council/${safeName}`;
+    const branchName = `ensemble/${safeName}`;
     const permissionMode = agent.permissionMode ?? config.defaultPermissionMode ?? 'bypassPermissions';
 
     const otherBranches = config.agents
       .filter((a) => a.name !== agent.name)
-      .map((a) => `council/${a.name}`)
+      .map((a) => `ensemble/${a.name}`)
       .join(', ');
 
     // Load and personalise system prompt
@@ -247,9 +262,10 @@ export class Council extends EventEmitter {
     // Get or create the agent's session
     let session = this._agentSessions.get(agent.name);
     if (!session || !session.isReady) {
+      this.log(`[ensemble:${this.id}] starting agent session ${agent.name} round ${round}`);
       session = new PersistentClaudeSession(
         {
-          name: `council-${this.id}-${agent.name}`,
+          name: `ensemble-${this.id}-${agent.name}`,
           cwd: worktreeDir,
           model: agent.model ?? config.agents[0].model,
           permissionMode,
@@ -280,7 +296,7 @@ export class Council extends EventEmitter {
   private async _setupWorktrees(projectDir: string, agents: AgentPersona[]): Promise<void> {
     for (const agent of agents) {
       const safeName = validateAgentName(agent.name);
-      const branchName = `council/${safeName}`;
+      const branchName = `ensemble/${safeName}`;
       const worktreePath = path.join(projectDir, WORKTREE_DIR, safeName);
 
       // Check if worktree already exists (exact-line match avoids substring false positives)
@@ -303,12 +319,12 @@ export class Council extends EventEmitter {
 
   // ─── Review / Accept / Reject ──────────────────────────────────────────────
 
-  async review(): Promise<CouncilReviewResult> {
+  async review(): Promise<EnsembleReviewResult> {
     const { config, responses, round, status } = this.session;
     const projectDir = path.resolve(config.projectDir);
 
-    // Changed files since council started
-    const changedFiles: CouncilChangedFile[] = [];
+    // Changed files since ensemble started
+    const changedFiles: EnsembleChangedFile[] = [];
     try {
       const { stdout } = await git(['diff', '--numstat', 'HEAD~1', 'HEAD'], projectDir);
       for (const line of stdout.trim().split('\n').filter(Boolean)) {
@@ -320,7 +336,7 @@ export class Council extends EventEmitter {
     // List branches
     let branches: string[] = [];
     try {
-      const { stdout } = await git(['branch', '--list', 'council/*'], projectDir);
+      const { stdout } = await git(['branch', '--list', 'ensemble/*'], projectDir);
       branches = stdout.trim().split('\n').map((b) => b.trim().replace(/^\*\s*/, '')).filter(Boolean);
     } catch {}
 
@@ -347,7 +363,7 @@ export class Council extends EventEmitter {
     }));
 
     return {
-      councilId: this.id,
+      ensembleId: this.id,
       projectDir,
       status,
       rounds: round,
@@ -360,7 +376,7 @@ export class Council extends EventEmitter {
     };
   }
 
-  async accept(): Promise<CouncilAcceptResult> {
+  async accept(): Promise<EnsembleAcceptResult> {
     const projectDir = path.resolve(this.session.config.projectDir);
 
     // Remove worktrees
@@ -377,10 +393,10 @@ export class Council extends EventEmitter {
       fs.rmSync(worktreeBase, { recursive: true, force: true });
     } catch {}
 
-    // Delete council branches
+    // Delete ensemble branches
     const deletedBranches: string[] = [];
     try {
-      const { stdout } = await git(['branch', '--list', 'council/*'], projectDir);
+      const { stdout } = await git(['branch', '--list', 'ensemble/*'], projectDir);
       for (const b of stdout.trim().split('\n').map((s) => s.trim()).filter(Boolean)) {
         const branch = b.replace(/^\*\s*/, '');
         try {
@@ -403,15 +419,16 @@ export class Council extends EventEmitter {
     }
 
     this.session.status = 'accepted';
+    this.log(`[ensemble:${this.id}] accepted — removed ${deletedBranches.length} branches, ${removedWorktrees.length} worktrees`);
     return {
-      councilId: this.id,
+      ensembleId: this.id,
       branchesDeleted: deletedBranches,
       worktreesRemoved: removedWorktrees,
       planDeleted,
     };
   }
 
-  async reject(feedback: string): Promise<CouncilRejectResult> {
+  async reject(feedback: string): Promise<EnsembleRejectResult> {
     const projectDir = path.resolve(this.session.config.projectDir);
     const planPath = path.join(projectDir, 'plan.md');
 
@@ -429,11 +446,12 @@ export class Council extends EventEmitter {
     fs.writeFileSync(planPath, content, 'utf8');
     try {
       await git(['add', 'plan.md'], projectDir);
-      await git(['commit', '-m', `reject: council ${this.id} — feedback recorded`], projectDir);
+      await git(['commit', '-m', `reject: ensemble ${this.id} — feedback recorded`], projectDir);
     } catch {}
 
     this.session.status = 'rejected';
-    return { councilId: this.id, planRewritten: true, feedback };
+    this.log(`[ensemble:${this.id}] rejected — feedback recorded`);
+    return { ensembleId: this.id, planRewritten: true, feedback };
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -457,10 +475,10 @@ export class Council extends EventEmitter {
       const logDir = path.join(
         process.env.HOME ?? '/tmp',
         '.openclaw',
-        'council-logs',
+        'ensemble-logs',
       );
       fs.mkdirSync(logDir, { recursive: true });
-      const filename = `council-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      const filename = `ensemble-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
       fs.writeFileSync(
         path.join(logDir, filename),
         JSON.stringify(this.session, null, 2),

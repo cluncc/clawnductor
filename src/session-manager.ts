@@ -2,7 +2,7 @@
  * SessionManager — orchestrates multiple PersistentClaudeSession instances
  *
  * Handles: session lifecycle, persistence, model/tool hot-swap,
- * council (ensemble), ultraplan (overture), ultrareview (finale),
+ * ensemble, ultraplan (overture), ultrareview (finale),
  * project purge, circuit breaker, and orphan PID cleanup.
  */
 import { execFile } from 'node:child_process';
@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { PersistentClaudeSession } from './session.js';
-import { Council } from './council.js';
+import { Ensemble } from './ensemble.js';
 import { validateRegex } from './validation.js';
 import {
   type SessionConfig,
@@ -21,11 +21,11 @@ import {
   type PluginConfig,
   type EffortLevel,
   type AgentInfo,
-  type CouncilConfig,
-  type CouncilSession,
-  type CouncilReviewResult,
-  type CouncilAcceptResult,
-  type CouncilRejectResult,
+  type EnsembleConfig,
+  type EnsembleSession,
+  type EnsembleReviewResult,
+  type EnsembleAcceptResult,
+  type EnsembleRejectResult,
   type UltraplanResult,
   type UltrareviewResult,
   type AgentPersona,
@@ -35,7 +35,7 @@ import {
   CIRCUIT_BREAKER_THRESHOLD,
   CIRCUIT_BREAKER_BACKOFF_BASE_MS,
   CIRCUIT_BREAKER_MAX_BACKOFF_MS,
-  COUNCIL_RESULT_TTL_MS,
+  ENSEMBLE_RESULT_TTL_MS,
   ULTRAPLAN_TIMEOUT_MS,
   ULTRAPLAN_RESULT_TTL_MS,
   ULTRAREVIEW_RESULT_TTL_MS,
@@ -48,6 +48,7 @@ const exec = promisify(execFile);
 const OPENCLAW_DIR = path.join(process.env.HOME ?? '/tmp', '.openclaw');
 const SESSIONS_FILE = path.join(OPENCLAW_DIR, 'clawnductor-sessions.json');
 const PIDS_FILE = path.join(OPENCLAW_DIR, 'clawnductor-pids.json');
+const ENSEMBLES_FILE = path.join(OPENCLAW_DIR, 'clawnductor-ensembles.json');
 
 // ─── CircuitBreaker ───────────────────────────────────────────────────────────
 
@@ -106,14 +107,16 @@ export class SessionManager {
   private pids = new Map<string, number>(); // name → pid
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private cb = new CircuitBreaker();
-  private councils = new Map<string, Council>();
+  private ensembles = new Map<string, Ensemble>();
+  private savedEnsembles: Record<string, EnsembleSession> = {};
   private ultraplans = new Map<string, UltraplanResult>();
   private ultrareviews = new Map<string, UltrareviewResult>();
   private _reviewPollers = new Set<ReturnType<typeof setInterval>>();
+  private log: (msg: string) => void;
 
   readonly config: PluginConfig;
 
-  constructor(raw: Partial<PluginConfig> = {}) {
+  constructor(raw: Partial<PluginConfig> = {}, log?: (msg: string) => void) {
     this.config = {
       claudeBin: raw.claudeBin ?? process.env.CLAUDE_BIN ?? 'claude',
       defaultModel: raw.defaultModel,
@@ -122,7 +125,9 @@ export class SessionManager {
       sessionTtlMinutes: raw.sessionTtlMinutes ?? DEFAULT_SESSION_TTL_MINUTES,
     };
 
+    this.log = log ?? (() => {});
     this._loadPersisted();
+    this._loadEnsembles();
     this._cleanupOrphanPids();
 
     const ttlMs = this.config.sessionTtlMinutes * 60_000;
@@ -134,7 +139,9 @@ export class SessionManager {
 
   async startSession(input: Partial<SessionConfig> & { name?: string }): Promise<SessionInfo> {
     if (this.cb.isOpen()) {
-      throw new Error(`Session circuit breaker open — too many consecutive failures. ${JSON.stringify(this.cb.status())}`);
+      const cbStatus = JSON.stringify(this.cb.status());
+      this.log(`[session] circuit breaker open — rejecting new session. ${cbStatus}`);
+      throw new Error(`Session circuit breaker open — too many consecutive failures. ${cbStatus}`);
     }
 
     if (this.sessions.size >= this.config.maxConcurrentSessions) {
@@ -170,11 +177,17 @@ export class SessionManager {
     try {
       await claudeSession.start();
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`[session:${name}] failed to start — ${msg}`);
       this.cb.recordFailure();
+      if (this.cb.isOpen()) {
+        this.log(`[session] circuit breaker opened after ${CIRCUIT_BREAKER_THRESHOLD} failures`);
+      }
       throw err;
     }
 
     this.cb.recordSuccess();
+    this.log(`[session:${name}] started`);
 
     const record: SessionRecord = {
       session: claudeSession,
@@ -215,6 +228,10 @@ export class SessionManager {
       onChunk: opts.onChunk,
     });
 
+    if (result.error) {
+      this.log(`[session:${name}] send error — ${result.error}`);
+    }
+
     if (!rec.config.noSessionPersistence) {
       this._persistSession(name, rec.session);
     }
@@ -231,6 +248,7 @@ export class SessionManager {
       this.sessions.delete(name);
       this.pids.delete(name);
       this._savePids();
+      this.log(`[session:${name}] stopped`);
     }
   }
 
@@ -375,11 +393,11 @@ export class SessionManager {
     };
   }
 
-  // ─── Council (ensemble) ────────────────────────────────────────────────────
+  // ─── Ensemble ─────────────────────────────────────────────────────────────────
 
-  councilStart(task: string, config: CouncilConfig): CouncilSession {
+  ensembleStart(task: string, config: EnsembleConfig): EnsembleSession {
     const id = randomUUID();
-    const councilSession: CouncilSession = {
+    const ensembleSession: EnsembleSession = {
       id,
       task,
       config,
@@ -389,47 +407,77 @@ export class SessionManager {
       startTime: new Date().toISOString(),
     };
 
-    const council = new Council(councilSession, this.config.claudeBin);
-    this.councils.set(id, council);
+    const ensemble = new Ensemble(ensembleSession, this.config.claudeBin, this.log);
+    this.ensembles.set(id, ensemble);
+    this._saveEnsembleState(ensembleSession);
 
-    // Run in background; auto-cleanup after TTL
-    council.run().catch(() => {}).finally(() => {
-      setTimeout(() => this.councils.delete(id), COUNCIL_RESULT_TTL_MS);
+    // Run in background; save final state and auto-cleanup after TTL
+    ensemble.run().catch(() => {}).finally(() => {
+      this._saveEnsembleState(ensemble.session);
+      setTimeout(() => this.ensembles.delete(id), ENSEMBLE_RESULT_TTL_MS);
     });
 
-    return councilSession;
+    return ensembleSession;
   }
 
-  councilStatus(id: string): CouncilSession | undefined {
-    return this.councils.get(id)?.session;
+  ensembleStatus(id: string): EnsembleSession | undefined {
+    const live = this.ensembles.get(id)?.session;
+    if (live) return live;
+
+    const saved = this.savedEnsembles[id];
+    if (!saved) return undefined;
+
+    // 'running' on disk with nothing in memory means the manager was reset mid-run
+    if (saved.status === 'running') {
+      return {
+        ...saved,
+        status: 'abandoned',
+        error: 'Ensemble was running when the manager last restarted',
+        endTime: saved.endTime ?? new Date().toISOString(),
+      };
+    }
+
+    return saved;
   }
 
-  councilAbort(id: string): void {
-    this.councils.get(id)?.abort();
+  ensembleAbort(id: string): void {
+    const e = this.ensembles.get(id);
+    if (e) {
+      e.abort();
+      this._saveEnsembleState(e.session);
+    } else {
+      this.log(`[ensemble:${id}] abort requested but ensemble not in memory`);
+    }
   }
 
-  councilInject(id: string, message: string): void {
-    const c = this.councils.get(id);
-    if (!c) throw new Error(`Council ${id} not found`);
-    c.inject(message);
+  ensembleInject(id: string, message: string): void {
+    const e = this.ensembles.get(id);
+    if (!e) throw new Error(`Ensemble ${id} not found`);
+    e.inject(message);
   }
 
-  councilReview(id: string): Promise<CouncilReviewResult> {
-    const c = this.councils.get(id);
-    if (!c) throw new Error(`Council ${id} not found`);
-    return c.review();
+  ensembleReview(id: string): Promise<EnsembleReviewResult> {
+    const e = this.ensembles.get(id);
+    if (!e) throw new Error(`Ensemble ${id} not found`);
+    return e.review();
   }
 
-  councilAccept(id: string): Promise<CouncilAcceptResult> {
-    const c = this.councils.get(id);
-    if (!c) throw new Error(`Council ${id} not found`);
-    return c.accept();
+  ensembleAccept(id: string): Promise<EnsembleAcceptResult> {
+    const e = this.ensembles.get(id);
+    if (!e) throw new Error(`Ensemble ${id} not found`);
+    return e.accept().then((result) => {
+      this._saveEnsembleState(e.session);
+      return result;
+    });
   }
 
-  councilReject(id: string, feedback: string): Promise<CouncilRejectResult> {
-    const c = this.councils.get(id);
-    if (!c) throw new Error(`Council ${id} not found`);
-    return c.reject(feedback);
+  ensembleReject(id: string, feedback: string): Promise<EnsembleRejectResult> {
+    const e = this.ensembles.get(id);
+    if (!e) throw new Error(`Ensemble ${id} not found`);
+    return e.reject(feedback).then((result) => {
+      this._saveEnsembleState(e.session);
+      return result;
+    });
   }
 
   // ─── Ultraplan (overture) ──────────────────────────────────────────────────
@@ -444,6 +492,7 @@ export class SessionManager {
       startTime: new Date().toISOString(),
     };
 
+    this.log(`[overture:${id.slice(0, 8)}] starting`);
     this.ultraplans.set(id, result);
     this._runUltraplan(id, task, sessionName, opts).catch(() => {});
     setTimeout(() => this.ultraplans.delete(id), ULTRAPLAN_RESULT_TTL_MS);
@@ -481,11 +530,13 @@ export class SessionManager {
       result.status = 'completed';
       result.plan = sendResult.output;
       result.endTime = new Date().toISOString();
+      this.log(`[overture:${id.slice(0, 8)}] completed`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       result.status = msg.includes('timed out') ? 'timeout' : 'error';
       result.error = msg;
       result.endTime = new Date().toISOString();
+      this.log(`[overture:${id.slice(0, 8)}] ${result.status} — ${msg}`);
     }
   }
 
@@ -514,7 +565,7 @@ export class SessionManager {
       }),
     );
 
-    const councilSession = this.councilStart(
+    const ensembleSession = this.ensembleStart(
       `Conduct a parallel code review of the codebase at ${cwd}. ${focus}. Each reviewer writes their findings to reviews/<reviewer>-findings.md and votes [CONSENSUS: YES] when done.`,
       {
         agents: selectedReviewers,
@@ -529,26 +580,29 @@ export class SessionManager {
     const reviewResult: UltrareviewResult = {
       id,
       status: 'running',
-      councilId: councilSession.id,
+      ensembleId: ensembleSession.id,
       agentCount,
       startTime: new Date().toISOString(),
     };
     this.ultrareviews.set(id, reviewResult);
+    this.log(`[finale:${id.slice(0, 8)}] started ${agentCount} reviewers`);
 
-    // Poll council for completion; tracked so shutdown() can clear it
+    // Poll ensemble for completion; tracked so shutdown() can clear it
     const poller = setInterval(() => {
-      const cs = this.councilStatus(councilSession.id);
-      if (!cs || cs.status === 'running') return;
+      const es = this.ensembleStatus(ensembleSession.id);
+      if (!es || es.status === 'running') return;
 
       clearInterval(poller);
       this._reviewPollers.delete(poller);
       reviewResult.endTime = new Date().toISOString();
 
-      if (cs.status === 'consensus' || cs.status === 'max_rounds') {
+      if (es.status === 'consensus' || es.status === 'max_rounds') {
         reviewResult.status = 'completed';
-        reviewResult.findings = this._synthesizeFindings(cwd, cs);
+        reviewResult.findings = this._synthesizeFindings(cwd, es);
+        this.log(`[finale:${id.slice(0, 8)}] completed — status: ${es.status}`);
       } else {
         reviewResult.status = 'error';
+        this.log(`[finale:${id.slice(0, 8)}] ended with ensemble status: ${es.status}`);
       }
 
       setTimeout(() => this.ultrareviews.delete(id), ULTRAREVIEW_RESULT_TTL_MS);
@@ -562,7 +616,7 @@ export class SessionManager {
     return this.ultrareviews.get(id);
   }
 
-  private _synthesizeFindings(cwd: string, council: CouncilSession): string {
+  private _synthesizeFindings(cwd: string, ensemble: EnsembleSession): string {
     const reviewsDir = `${path.resolve(cwd)}/reviews`;
     const parts: string[] = ['# Finale Review Findings\n'];
 
@@ -581,8 +635,8 @@ export class SessionManager {
 
     // Fall back to agent response text
     if (parts.length <= 1) {
-      const last = Math.max(...council.responses.map((r) => r.round));
-      for (const r of council.responses.filter((x) => x.round === last)) {
+      const last = Math.max(...ensemble.responses.map((r) => r.round));
+      for (const r of ensemble.responses.filter((x) => x.round === last)) {
         parts.push(`## ${r.agent}\n`, r.content, '');
       }
     }
@@ -620,8 +674,12 @@ export class SessionManager {
     for (const [name, rec] of this.sessions) {
       rec.session.stop();
       this.sessions.delete(name);
+      this.log(`[session:${name}] stopped on shutdown`);
     }
-    for (const council of this.councils.values()) council.abort();
+    for (const ensemble of this.ensembles.values()) {
+      ensemble.abort();
+      this._saveEnsembleState(ensemble.session);
+    }
     this.pids.clear();
     this._savePids();
   }
@@ -660,6 +718,30 @@ export class SessionManager {
     } catch {
       this.persisted = [];
     }
+  }
+
+  private _saveEnsembleState(session: EnsembleSession): void {
+    this.savedEnsembles[session.id] = session;
+    try {
+      fs.mkdirSync(OPENCLAW_DIR, { recursive: true });
+      fs.writeFileSync(ENSEMBLES_FILE, JSON.stringify(this.savedEnsembles, null, 2));
+    } catch {}
+  }
+
+  private _loadEnsembles(): void {
+    try {
+      if (!fs.existsSync(ENSEMBLES_FILE)) return;
+      const data = JSON.parse(fs.readFileSync(ENSEMBLES_FILE, 'utf8')) as Record<string, EnsembleSession>;
+      const cutoff = Date.now() - 7 * 86_400_000; // prune entries older than 7 days
+      for (const [id, session] of Object.entries(data)) {
+        if (session.startTime && new Date(session.startTime).getTime() < cutoff) continue;
+        // Load raw state; ensembleStatus() resolves abandoned vs live at query time
+        if (session.status === 'running') {
+          this.log(`[ensemble:${id}] loaded from disk with status running — will appear as abandoned until confirmed live`);
+        }
+        this.savedEnsembles[id] = session;
+      }
+    } catch {}
   }
 
   private _savePids(): void {
@@ -719,6 +801,7 @@ export class SessionManager {
         rec.session.stop();
         this.sessions.delete(name);
         this.pids.delete(name);
+        this.log(`[session:${name}] evicted (idle TTL)`);
       }
     }
     this._savePids();
