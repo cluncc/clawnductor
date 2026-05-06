@@ -751,10 +751,22 @@ export class SessionManager {
             }
           } catch {}
           if (!recovered) {
-            // Check if any agent processes are still alive before declaring abandoned
+            // agentPids is written to the log file on every _flushLog() but only reaches
+            // ENSEMBLES_FILE at completion/shutdown. Read the log for pids even when status
+            // is still 'running' — the initial save to ENSEMBLES_FILE has no pids yet.
+            let pidsToCheck = session.agentPids;
+            if (!pidsToCheck) {
+              try {
+                if (fs.existsSync(logPath)) {
+                  const logged = JSON.parse(fs.readFileSync(logPath, 'utf8')) as EnsembleSession;
+                  if (logged.agentPids) pidsToCheck = logged.agentPids;
+                }
+              } catch {}
+            }
+
             let anyAlive = false;
-            if (session.agentPids) {
-              for (const pid of Object.values(session.agentPids)) {
+            if (pidsToCheck) {
+              for (const pid of Object.values(pidsToCheck)) {
                 try {
                   process.kill(pid, 0);
                   const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
@@ -763,8 +775,13 @@ export class SessionManager {
               }
             }
             if (anyAlive) {
-              // Agents are still running — leave status as running, manager will reconnect via poll
-              this.log(`[ensemble:${id}] agents still alive after manager restart, keeping as running`);
+              // The run() loop died with the manager restart; agents are orphaned and will
+              // self-exit when their current turn completes and stdin closes. Mark as error
+              // (not abandoned) so the user knows to check the worktree branches.
+              session.status = 'error';
+              session.error = 'Manager restarted while ensemble was running — agent processes are orphaned and will self-exit. Check worktree branches for partial work.';
+              session.endTime = new Date().toISOString();
+              this.log(`[ensemble:${id}] orphaned agents detected after manager restart — marked error`);
             } else {
               session.status = 'abandoned';
               session.error = 'Manager restarted while ensemble was running';
