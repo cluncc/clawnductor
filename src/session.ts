@@ -51,6 +51,8 @@ export class PersistentClaudeSession extends EventEmitter {
   private _turnEvents: StreamEvent[] = [];
   private _turnText: string[] = [];
   private _turnTimer: ReturnType<typeof setTimeout> | null = null;
+  private _lastOutput: string | null = null;
+  private _lastError: string | null = null;
 
   sessionId?: string;
   private _stats: InternalStats;
@@ -92,6 +94,8 @@ export class PersistentClaudeSession extends EventEmitter {
       contextPercent: Math.min(100, Math.round((total / CONTEXT_WINDOW_TOKENS) * 100)),
       retries: this._stats.retries,
       lastRetryError: this._stats.lastRetryError,
+      lastOutput: this._lastOutput ?? undefined,
+      lastError: this._lastError ?? undefined,
     };
   }
 
@@ -220,13 +224,17 @@ export class PersistentClaudeSession extends EventEmitter {
       const resolve = this._resolve;
       const reject = this._reject;
       const events = this._turnEvents.slice();
+      this._lastOutput = output;
+      if (subtype !== 'success') {
+        this._lastError = `Claude error (${subtype}): ${output}`;
+      }
       this._clearTurn();
       this._isBusy = false;
 
       if (subtype === 'success') {
         resolve!({ output, sessionId: this.sessionId, events });
       } else {
-        reject!(new Error(`Claude error (${subtype}): ${output}`));
+        reject!(new Error(this._lastError!));
       }
     }
   }
@@ -245,6 +253,8 @@ export class PersistentClaudeSession extends EventEmitter {
     this._isBusy = true;
     this._turnEvents = [];
     this._turnText = [];
+    this._lastOutput = null;
+    this._lastError = null;
 
     if (opts.onChunk) {
       const handler = (text: string) => opts.onChunk!(text);
@@ -259,6 +269,9 @@ export class PersistentClaudeSession extends EventEmitter {
         this._clearTurn();
         this._isBusy = false;
         (rej ?? reject)(new Error(`Turn timed out after ${ms}ms`));
+        // Kill the subprocess — leaving it alive would cause its eventual result
+        // event to resolve the *next* turn's promise with the wrong output.
+        this.stop();
       }, ms);
 
       this._resolve = resolve;

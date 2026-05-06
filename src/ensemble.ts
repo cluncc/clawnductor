@@ -120,7 +120,10 @@ export class Ensemble extends EventEmitter {
       await git(['rev-parse', '--git-dir'], projectDir);
     } catch {
       await git(['init'], projectDir);
-      await git(['commit', '--allow-empty', '-m', 'init: ensemble workspace'], projectDir);
+      await git([
+        '-c', 'user.email=ensemble@local', '-c', 'user.name=Ensemble',
+        'commit', '--allow-empty', '-m', 'init: ensemble workspace',
+      ], projectDir);
     }
 
     // Set up worktrees and branches for each agent
@@ -152,7 +155,7 @@ export class Ensemble extends EventEmitter {
 
         // Check consensus
         const votes = responses.map((r) => r.consensus);
-        const allYes = votes.length === config.agents.length && votes.every(Boolean);
+        const allYes = config.agents.length > 0 && votes.length === config.agents.length && votes.every(Boolean);
 
         const voteStr = responses.map((r) => `${r.agent}:${r.consensus ? 'YES' : 'NO'}`).join(' ');
         this.log(`[ensemble:${this.id}] round ${round} votes — ${voteStr}`);
@@ -297,6 +300,10 @@ export class Ensemble extends EventEmitter {
   // ─── Worktree management ───────────────────────────────────────────────────
 
   private async _setupWorktrees(projectDir: string, agents: AgentPersona[]): Promise<void> {
+    // Prune stale entries before checking — removes .git/worktrees/<name> for directories
+    // that no longer exist, preventing false "already exists" errors on re-runs.
+    try { await git(['worktree', 'prune'], projectDir); } catch {}
+
     // Fetch worktree list once; parsing it per-agent would be O(n²) git invocations
     const { stdout: worktreeOut } = await git(['worktree', 'list', '--porcelain'], projectDir);
     const existingWorktrees = new Set(
@@ -317,7 +324,12 @@ export class Ensemble extends EventEmitter {
         // branch already exists, that's fine
       }
 
-      // Add worktree
+      // Remove stale directory: git doesn't track it (not in worktree list) but
+      // it exists on disk. git worktree add would fail with "already exists".
+      if (fs.existsSync(worktreePath)) {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+      }
+
       fs.mkdirSync(path.join(projectDir, WORKTREE_DIR), { recursive: true });
       await git(['worktree', 'add', worktreePath, branchName], projectDir, 60_000);
     }

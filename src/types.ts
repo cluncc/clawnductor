@@ -44,6 +44,8 @@ export interface SessionStats {
   contextPercent: number;
   retries: number;
   lastRetryError?: string;
+  lastOutput?: string;
+  lastError?: string;
 }
 
 export interface StreamEvent {
@@ -224,7 +226,7 @@ export const DEFAULT_MAX_TURNS_PER_AGENT = 30;
 export const INTER_ROUND_DELAY_MS = 2_000;
 export const ENSEMBLE_RESULT_TTL_MS = 30 * 60_000;
 export const GIT_CMD_TIMEOUT_MS = 30_000;
-export const WORKTREE_DIR = '.worktrees';
+export const WORKTREE_DIR = '.sheetmusic';
 
 export const ULTRAPLAN_TIMEOUT_MS = 30 * 60_000;
 export const ULTRAPLAN_RESULT_TTL_MS = 30 * 60_000;

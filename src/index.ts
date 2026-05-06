@@ -149,32 +149,42 @@ const plugin = {
 
     registerTool({
       name: 'jam_play',
-      description: 'Send a prompt to an active jam session and get the response.',
+      description: 'Send a prompt to an active jam session and get the response. Use nowait:true to return immediately without blocking the channel — poll jam_status for busy:false, then read lastOutput.',
       parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: 'Session name from jam_start' },
           message: { type: 'string', description: 'Prompt to send' },
-          effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
           plan: { type: 'boolean', description: 'Enter plan mode for this message' },
           timeout: { type: 'number', description: 'Timeout in ms (default 300000)' },
           stream: { type: 'boolean', description: 'Collect chunks as they arrive into result.chunks[]' },
+          nowait: { type: 'boolean', description: 'Return immediately without waiting for the response. Poll jam_status until busy:false, then read lastOutput.' },
         },
         required: ['name', 'message'],
       },
       execute: async (_id, args) => {
         const name = validateName(args.name, 'name');
         const message = validateStringField(args.message, 'message');
+        const sendOpts = {
+          plan: args.plan !== undefined ? validateBoolean(args.plan, 'plan') : undefined,
+          timeout: args.timeout !== undefined ? validateTimeout(args.timeout, 'timeout') : undefined,
+        };
+
+        if (args.nowait) {
+          // Pre-check synchronously so busy/not-ready errors surface immediately
+          // rather than being silently swallowed by the fire-and-forget.
+          const s = getManager().getStatus(name);
+          if (!s.stats.isReady) throw new Error(`Session "${name}" is not ready`);
+          if (s.stats.busy) throw new Error(`Session "${name}" is busy`);
+          getManager().sendMessage(name, message, sendOpts).catch(() => {});
+          return { ok: true, pending: true, name };
+        }
+
         const chunks: string[] = [];
         const result = await getManager().sendMessage(
           name,
           message,
-          {
-            effort: args.effort !== undefined ? validateEffort(args.effort, 'effort') as EffortLevel : undefined,
-            plan: args.plan !== undefined ? validateBoolean(args.plan, 'plan') : undefined,
-            timeout: args.timeout !== undefined ? validateTimeout(args.timeout, 'timeout') : undefined,
-            onChunk: args.stream ? (c: string) => chunks.push(c) : undefined,
-          },
+          { ...sendOpts, onChunk: args.stream ? (c: string) => chunks.push(c) : undefined },
         );
         return { ok: true, ...result, ...(args.stream ? { chunks } : {}) };
       },
@@ -382,7 +392,8 @@ const plugin = {
           { name: 'Critic', emoji: '🎭', persona: 'Quality gate: review Performer\'s commits for correctness, test coverage, and spec compliance. APPROVE or REQUEST_CHANGES with specific feedback.' },
         ];
 
-        let agents = (args.agents as AgentPersona[] | undefined) ?? defaultAgents;
+        const rawAgents = args.agents as AgentPersona[] | undefined;
+        let agents = rawAgents && rawAgents.length > 0 ? rawAgents : defaultAgents;
         agents = agents.map((a) => ({
           ...a,
           name: validateAgentName(a.name, 'agent.name'),

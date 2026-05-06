@@ -70,7 +70,7 @@ An `Ensemble` coordinates a set of `AgentPersona` definitions through rounds:
 2. **Round 2+ (Implementation):** Agents claim `- [ ]` checkboxes, implement, commit, and merge to main.
 3. **Consensus:** All agents voting `[CONSENSUS: YES]` ends the ensemble. Max rounds is a safety cap.
 
-Each agent gets an isolated git worktree at `<projectDir>/.worktrees/<AgentName>` on branch `ensemble/<AgentName>`. Worktrees let agents write code without interfering with each other; the main branch is the merge target.
+Each agent gets an isolated git worktree at `<projectDir>/.sheetmusic/<AgentName>` on branch `ensemble/<AgentName>`. Worktrees let agents write code without interfering with each other; the main branch is the merge target.
 
 Worktrees are set up in one batch (`git worktree list --porcelain` once, parsed into a Set) rather than querying per-agent, which would be O(n) git invocations where n = agent count.
 
@@ -193,7 +193,7 @@ The `CircuitBreaker` class inside `SessionManager` prevents runaway subprocess s
 | Tool | Description |
 |---|---|
 | `jam_start` | Start a persistent Claude Code session. Returns a name used by all other `jam_*` tools. |
-| `jam_play` | Send a prompt, get a response. Supports streaming (`stream: true`) and plan mode. |
+| `jam_play` | Send a prompt, get a response. Supports streaming (`stream: true`), plan mode, and non-blocking fire-and-forget (`nowait: true`). |
 | `jam_end` | Stop the session and free the subprocess. |
 | `jam_list` | List all active sessions and persisted session IDs on disk. |
 | `jam_status` | Detailed stats: context %, tokens in/out, cost, retries, uptime. |
@@ -302,11 +302,11 @@ Ensemble agents are additional subprocesses — a 3-agent ensemble plus 1 jam se
 
 ### Ensemble worktree cleanup
 
-Worktrees are only removed when `ensemble_accept` is called. If the process crashes mid-ensemble, worktrees at `<projectDir>/.worktrees/` must be cleaned up manually:
+Worktrees are only removed when `ensemble_accept` is called. If the process crashes mid-ensemble, worktrees at `<projectDir>/.sheetmusic/` must be cleaned up manually:
 
 ```sh
 git worktree list
-git worktree remove --force .worktrees/<AgentName>
+git worktree remove --force .sheetmusic/<AgentName>
 git branch -D ensemble/<AgentName>
 ```
 
@@ -330,6 +330,24 @@ git -C /path/to/project config user.name "Ensemble"
 ```
 
 Or set them globally: `git config --global user.email ...`
+
+### `jam_play` with `nowait:true` — non-blocking pattern
+
+`nowait: true` writes the message to the Claude subprocess stdin and returns `{ ok: true, pending: true }` immediately without holding the OpenClaw communications channel open. The response lands in `jam_status` once `busy: false`:
+
+```
+jam_play(name, message, nowait: true)
+→ { ok: true, pending: true }
+
+# poll until idle:
+jam_status(name) → { busy: false, stats: { lastOutput: "...", lastError: undefined } }
+```
+
+`lastOutput` and `lastError` are cleared when each new turn starts, so a null `lastOutput` with `busy: true` unambiguously means "in flight". If the turn errors (non-success result from Claude), `lastError` is set; `lastOutput` still contains the raw response text.
+
+### Turn timeouts kill the session
+
+When a `jam_play` turn times out, the Claude subprocess is killed immediately. This prevents a silent correctness bug: the timed-out turn's eventual `result` event would otherwise resolve the *next* turn's promise with the wrong output. After a timeout, `jam_status` shows `isReady: false`; use `jam_start` with the same name to restart.
 
 ### Ultraplan / Ultrareview result TTL
 

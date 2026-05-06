@@ -19,7 +19,6 @@ import {
   type PersistedSession,
   type SendResult,
   type PluginConfig,
-  type EffortLevel,
   type AgentInfo,
   type EnsembleConfig,
   type EnsembleSession,
@@ -227,7 +226,7 @@ export class SessionManager {
   async sendMessage(
     name: string,
     message: string,
-    opts: { effort?: EffortLevel; plan?: boolean; timeout?: number; onChunk?: (t: string) => void } = {},
+    opts: { plan?: boolean; timeout?: number; onChunk?: (t: string) => void } = {},
   ): Promise<SendResult> {
     const rec = this._get(name);
     rec.lastUsed = Date.now();
