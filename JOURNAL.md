@@ -70,7 +70,7 @@ An `Ensemble` coordinates a set of `AgentPersona` definitions through rounds:
 2. **Round 2+ (Implementation):** Agents claim `- [ ]` checkboxes, implement, commit, and merge to main.
 3. **Consensus:** All agents voting `[CONSENSUS: YES]` ends the ensemble. Max rounds is a safety cap.
 
-Each agent gets an isolated git worktree at `<projectDir>/.sheetmusic/<AgentName>` on branch `ensemble/<AgentName>`. Worktrees let agents write code without interfering with each other; the main branch is the merge target.
+Each agent gets an isolated git worktree at `<projectDir>/.worktrees/<AgentName>` on branch `ensemble/<AgentName>`. Worktrees let agents write code without interfering with each other; the main branch is the merge target.
 
 Worktrees are set up in one batch (`git worktree list --porcelain` once, parsed into a Set) rather than querying per-agent, which would be O(n) git invocations where n = agent count.
 
@@ -302,11 +302,11 @@ Ensemble agents are additional subprocesses — a 3-agent ensemble plus 1 jam se
 
 ### Ensemble worktree cleanup
 
-Worktrees are only removed when `ensemble_accept` is called. If the process crashes mid-ensemble, worktrees at `<projectDir>/.sheetmusic/` must be cleaned up manually:
+Worktrees are only removed when `ensemble_accept` is called. If the process crashes mid-ensemble, worktrees at `<projectDir>/.worktrees/` must be cleaned up manually:
 
 ```sh
 git worktree list
-git worktree remove --force .sheetmusic/<AgentName>
+git worktree remove --force .worktrees/<AgentName>
 git branch -D ensemble/<AgentName>
 ```
 

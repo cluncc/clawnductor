@@ -115,23 +115,32 @@ export class Ensemble extends EventEmitter {
     this.log(`[ensemble:${this.id}] starting — task: ${task.slice(0, 80)}`);
     this._flushLog();
 
-    // Ensure project dir is a git repo
-    try {
-      await git(['rev-parse', '--git-dir'], projectDir);
-    } catch {
-      await git(['init'], projectDir);
-      await git([
-        '-c', 'user.email=ensemble@local', '-c', 'user.name=Ensemble',
-        'commit', '--allow-empty', '-m', 'init: ensemble workspace',
-      ], projectDir);
-    }
-
-    // Set up worktrees and branches for each agent
-    await this._setupWorktrees(projectDir, config.agents);
-
     this.session.status = 'running';
 
     try {
+      // Ensure project dir is a git repo with at least one commit (required for worktrees)
+      try {
+        await git(['rev-parse', '--git-dir'], projectDir);
+        // Repo exists — ensure HEAD is valid (worktree add fails on commitless repos)
+        try {
+          await git(['rev-parse', 'HEAD'], projectDir);
+        } catch {
+          await git([
+            '-c', 'user.email=ensemble@local', '-c', 'user.name=Ensemble',
+            'commit', '--allow-empty', '-m', 'init: ensemble workspace',
+          ], projectDir);
+        }
+      } catch {
+        await git(['init'], projectDir);
+        await git([
+          '-c', 'user.email=ensemble@local', '-c', 'user.name=Ensemble',
+          'commit', '--allow-empty', '-m', 'init: ensemble workspace',
+        ], projectDir);
+      }
+
+      // Set up worktrees and branches for each agent
+      await this._setupWorktrees(projectDir, config.agents);
+
       for (let round = 1; round <= maxRounds; round++) {
         if (this._aborted) break;
 
