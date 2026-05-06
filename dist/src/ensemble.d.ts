@@ -10,6 +10,7 @@ export declare class Ensemble extends EventEmitter {
     private log;
     constructor(session: EnsembleSession, claudeBin: string, log?: (msg: string) => void);
     get id(): string;
+    private _killProcesses;
     abort(): void;
     inject(message: string): void;
     run(): Promise<void>;

@@ -94,10 +94,21 @@ export class Ensemble extends EventEmitter {
 
   get id(): string { return this.session.id; }
 
-  abort(): void {
-    this._aborted = true;
+  private _killProcesses(): void {
     for (const s of this._agentSessions.values()) s.stop();
     this._agentSessions.clear();
+    const pids = this.session.agentPids;
+    if (pids) {
+      for (const pid of Object.values(pids)) {
+        try { process.kill(pid, 'SIGTERM'); } catch {}
+        setTimeout(() => { try { process.kill(pid, 'SIGKILL'); } catch {} }, 3000);
+      }
+    }
+  }
+
+  abort(): void {
+    this._aborted = true;
+    this._killProcesses();
     this.log(`[ensemble:${this.id}] aborted`);
   }
 
@@ -409,6 +420,7 @@ export class Ensemble extends EventEmitter {
   }
 
   async accept(): Promise<EnsembleAcceptResult> {
+    this._killProcesses();
     const projectDir = path.resolve(this.session.config.projectDir);
 
     // Remove worktrees

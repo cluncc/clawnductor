@@ -68,11 +68,27 @@ export class Ensemble extends EventEmitter {
         this.log = log ?? (() => { });
     }
     get id() { return this.session.id; }
-    abort() {
-        this._aborted = true;
+    _killProcesses() {
         for (const s of this._agentSessions.values())
             s.stop();
         this._agentSessions.clear();
+        const pids = this.session.agentPids;
+        if (pids) {
+            for (const pid of Object.values(pids)) {
+                try {
+                    process.kill(pid, 'SIGTERM');
+                }
+                catch { }
+                setTimeout(() => { try {
+                    process.kill(pid, 'SIGKILL');
+                }
+                catch { } }, 3000);
+            }
+        }
+    }
+    abort() {
+        this._aborted = true;
+        this._killProcesses();
         this.log(`[ensemble:${this.id}] aborted`);
     }
     inject(message) {
@@ -321,6 +337,7 @@ export class Ensemble extends EventEmitter {
         };
     }
     async accept() {
+        this._killProcesses();
         const projectDir = path.resolve(this.session.config.projectDir);
         // Remove worktrees
         const removedWorktrees = [];
