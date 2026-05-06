@@ -106,6 +106,7 @@ export interface EnsembleSession {
     startTime: string;
     endTime?: string;
     error?: string;
+    agentPids?: Record<string, number>;
 }
 export interface EnsembleChangedFile {
     file: string;

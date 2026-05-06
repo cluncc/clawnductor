@@ -292,6 +292,11 @@ export class Ensemble extends EventEmitter {
       );
       await session.start();
       this._agentSessions.set(agent.name, session);
+      const pid = session.pid;
+      if (pid) {
+        this.session.agentPids ??= {};
+        this.session.agentPids[agent.name] = pid;
+      }
     }
 
     const result = await session.send(prompt, { timeout: timeoutMs });

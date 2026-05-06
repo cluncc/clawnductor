@@ -534,11 +534,15 @@ export class SessionManager {
             this.sessions.delete(name);
             this.log(`[session:${name}] stopped on shutdown`);
         }
-        // Ensembles are intentionally NOT aborted — they run to completion as detached
-        // background work. The finally block in ensembleStart() saves final state to disk.
         for (const ensemble of this.ensembles.values()) {
-            this.log(`[ensemble:${ensemble.id}] detached on shutdown — will run to completion`);
+            ensemble.abort();
+            if (ensemble.session.status === 'running') {
+                ensemble.session.status = 'error';
+                ensemble.session.error = 'Manager shut down while ensemble was running';
+                ensemble.session.endTime = new Date().toISOString();
+            }
             this._saveEnsembleState(ensemble.session);
+            this.log(`[ensemble:${ensemble.id}] aborted on shutdown`);
         }
         this.pids.clear();
         this._savePids();
@@ -596,10 +600,47 @@ export class SessionManager {
                 if (session.startTime && new Date(session.startTime).getTime() < cutoff)
                     continue;
                 if (session.status === 'running') {
-                    session.status = 'abandoned';
-                    session.error = 'Manager restarted while ensemble was running';
-                    session.endTime = new Date().toISOString();
-                    this.log(`[ensemble:${id}] marked abandoned — was running when manager last stopped`);
+                    // Check the per-ensemble log file for a terminal state written after each round flush
+                    const logPath = path.join(OPENCLAW_DIR, 'ensemble-logs', `ensemble-${id}.json`);
+                    let recovered = false;
+                    try {
+                        if (fs.existsSync(logPath)) {
+                            const logged = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+                            if (logged.status !== 'running') {
+                                Object.assign(session, logged);
+                                recovered = true;
+                                this.log(`[ensemble:${id}] recovered terminal status '${session.status}' from log`);
+                            }
+                        }
+                    }
+                    catch { }
+                    if (!recovered) {
+                        // Check if any agent processes are still alive before declaring abandoned
+                        let anyAlive = false;
+                        if (session.agentPids) {
+                            for (const pid of Object.values(session.agentPids)) {
+                                try {
+                                    process.kill(pid, 0);
+                                    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+                                    if (cmdline.includes('claude')) {
+                                        anyAlive = true;
+                                        break;
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                        if (anyAlive) {
+                            // Agents are still running — leave status as running, manager will reconnect via poll
+                            this.log(`[ensemble:${id}] agents still alive after manager restart, keeping as running`);
+                        }
+                        else {
+                            session.status = 'abandoned';
+                            session.error = 'Manager restarted while ensemble was running';
+                            session.endTime = new Date().toISOString();
+                            this.log(`[ensemble:${id}] marked abandoned — was running when manager last stopped`);
+                        }
+                    }
                 }
                 this.savedEnsembles[id] = session;
             }
