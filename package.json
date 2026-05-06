@@ -1,6 +1,6 @@
 {
   "name": "clawnductor",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Weaponize Claude Code from OpenClaw — persistent sessions, multi-agent ensembles, ultraplan, and fleet review. No external dependencies.",
   "type": "module",
   "main": "./dist/src/index.js",
