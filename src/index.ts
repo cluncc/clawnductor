@@ -485,7 +485,7 @@ const plugin = {
 
     registerTool({
       name: 'ensemble_accept',
-      description: 'Accept ensemble work and clean up: removes worktrees, ensemble/* branches, plan.md, reviews/.',
+      description: 'Accept ensemble work: merges each ensemble/* branch into the current branch, then removes worktrees, ensemble/* branches, plan.md, reviews/.',
       parameters: {
         type: 'object',
         properties: { id: { type: 'string' } },

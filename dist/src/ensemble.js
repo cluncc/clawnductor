@@ -339,6 +339,45 @@ export class Ensemble extends EventEmitter {
     async accept() {
         this._killProcesses();
         const projectDir = path.resolve(this.session.config.projectDir);
+        // Determine current branch of the main worktree (this is what agents merge into)
+        let targetBranch = 'HEAD';
+        try {
+            const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD'], projectDir);
+            targetBranch = stdout.trim();
+        }
+        catch (err) {
+            this.log(`[ensemble:${this.id}] could not determine current branch — ${err instanceof Error ? err.message : String(err)}`);
+        }
+        // Collect ensemble branches before removing worktrees
+        let ensembleBranches = [];
+        try {
+            const { stdout } = await git(['branch', '--list', 'ensemble/*'], projectDir);
+            ensembleBranches = stdout.trim().split('\n')
+                .map((s) => s.trim().replace(/^\*\s*/, ''))
+                .filter(Boolean);
+        }
+        catch (err) {
+            this.log(`[ensemble:${this.id}] could not list ensemble branches — ${err instanceof Error ? err.message : String(err)}`);
+        }
+        // Merge each ensemble branch into the current branch before cleanup
+        const mergedBranches = [];
+        const mergeFailed = [];
+        for (const branch of ensembleBranches) {
+            try {
+                await git(['merge', '--no-ff', branch, '-m', `merge: ensemble/${this.id} — ${branch}`], projectDir);
+                mergedBranches.push(branch);
+                this.log(`[ensemble:${this.id}] merged ${branch} into ${targetBranch}`);
+            }
+            catch (err) {
+                mergeFailed.push(branch);
+                this.log(`[ensemble:${this.id}] merge failed for ${branch} — ${err instanceof Error ? err.message : String(err)}`);
+                // Abort the failed merge so git state stays clean for subsequent branches
+                try {
+                    await git(['merge', '--abort'], projectDir);
+                }
+                catch { }
+            }
+        }
         // Remove worktrees
         const removedWorktrees = [];
         const worktreeBase = path.join(projectDir, WORKTREE_DIR);
@@ -349,25 +388,26 @@ export class Ensemble extends EventEmitter {
                     await git(['worktree', 'remove', '--force', wt], projectDir, 60_000);
                     removedWorktrees.push(wt);
                 }
-                catch { }
+                catch (err) {
+                    this.log(`[ensemble:${this.id}] worktree remove failed for ${wt} — ${err instanceof Error ? err.message : String(err)}`);
+                }
             }
             fs.rmSync(worktreeBase, { recursive: true, force: true });
         }
-        catch { }
+        catch (err) {
+            this.log(`[ensemble:${this.id}] worktree cleanup failed — ${err instanceof Error ? err.message : String(err)}`);
+        }
         // Delete ensemble branches
         const deletedBranches = [];
-        try {
-            const { stdout } = await git(['branch', '--list', 'ensemble/*'], projectDir);
-            for (const b of stdout.trim().split('\n').map((s) => s.trim()).filter(Boolean)) {
-                const branch = b.replace(/^\*\s*/, '');
-                try {
-                    await git(['branch', '-D', branch], projectDir);
-                    deletedBranches.push(branch);
-                }
-                catch { }
+        for (const branch of ensembleBranches) {
+            try {
+                await git(['branch', '-D', branch], projectDir);
+                deletedBranches.push(branch);
+            }
+            catch (err) {
+                this.log(`[ensemble:${this.id}] branch delete failed for ${branch} — ${err instanceof Error ? err.message : String(err)}`);
             }
         }
-        catch { }
         // Delete plan.md and reviews/
         const planPath = path.join(projectDir, 'plan.md');
         let planDeleted = false;
@@ -380,9 +420,11 @@ export class Ensemble extends EventEmitter {
             fs.rmSync(reviewsPath, { recursive: true, force: true });
         }
         this.session.status = 'accepted';
-        this.log(`[ensemble:${this.id}] accepted — removed ${deletedBranches.length} branches, ${removedWorktrees.length} worktrees`);
+        this.log(`[ensemble:${this.id}] accepted — merged ${mergedBranches.length}/${ensembleBranches.length} branches into ${targetBranch}, removed ${removedWorktrees.length} worktrees`);
         return {
             ensembleId: this.id,
+            mergedBranches,
+            mergeFailed,
             branchesDeleted: deletedBranches,
             worktreesRemoved: removedWorktrees,
             planDeleted,

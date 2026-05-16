@@ -161,6 +161,8 @@ export interface EnsembleReviewResult {
 
 export interface EnsembleAcceptResult {
   ensembleId: string;
+  mergedBranches: string[];
+  mergeFailed: string[];
   branchesDeleted: string[];
   worktreesRemoved: string[];
   planDeleted: boolean;
